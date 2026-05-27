@@ -1,47 +1,154 @@
-# Cocapn.com — The Agent Equipment Catalog
+# cocapn-com
 
-You built an agent. Stop hardcoding every API. This is a self-hosted, machine-readable gear market for AI components.
+Inter-agent messaging protocols and message routing for the Cocapn fleet.
 
-**Live Demo:** https://cocapn-com.casey-digennaro.workers.dev
+## Installation
 
-## Why This Exists
-Re-gluing the same set of AI services for each new agent project is inefficient. This project provides a shared catalog template you can host yourself, listing capabilities, costs, and compatibility data in a format your agents can query directly.
+```bash
+pip install cocapn-com
+```
 
 ## Quick Start
-1.  Fork this repository.
-2.  Deploy to Cloudflare Workers in under two minutes using `npx wrangler deploy`.
-3.  Customize the data in `src/`. Your fork is independent and controlled by you.
+
+### Create and route a message
+
+```python
+from cocapn_com import Message, MessageType, Priority, MessageRouter
+
+# Build a message
+msg = Message(
+    sender="agent-planner",
+    recipient="agent-worker",
+    payload={"task": "index_documents"},
+    type=MessageType.COMMAND,
+    priority=Priority.HIGH,
+)
+
+# Set up a router with a subscriber
+router = MessageRouter()
+router._default_channel.subscribe("agent-worker", lambda m: print(f"Got: {m.payload}"))
+
+# Route it
+router.route(msg)
+# => Got: {'task': 'index_documents'}
+```
+
+### Pub/Sub channel
+
+```python
+from cocapn_com import Channel, ChannelMode, Message
+
+ch = Channel("events", ChannelMode.PUB_SUB)
+ch.subscribe("logger", lambda m: print(f"[LOG] {m.payload}"))
+ch.subscribe("auditor", lambda m: print(f"[AUDIT] {m.payload}"))
+
+ch.deliver(Message(sender="svc", recipient=None, payload="user_login"))
+# [LOG] user_login
+# [AUDIT] user_login
+```
+
+### Point-to-point and broadcast
+
+```python
+from cocapn_com import Channel, ChannelMode, Message
+
+ptp = Channel("rpc", ChannelMode.POINT_TO_POINT)
+ptp.subscribe("db", lambda m: ...)
+ptp.subscribe("cache", lambda m: ...)
+
+# Only "db" receives this
+ptp.deliver(Message(sender="api", recipient="db", payload="SELECT 1"))
+```
+
+### Delivery rules and forwarding
+
+```python
+from cocapn_com import MessageRouter, DeliveryRule, Channel, ChannelMode, MessageType
+
+router = MessageRouter()
+
+# Route all ERROR messages to an alerts channel
+alerts = Channel("alerts", ChannelMode.PUB_SUB)
+alerts.subscribe("ops-team", lambda m: print(f"ALERT: {m.payload}"))
+router.add_channel(alerts)
+
+router.add_rule(DeliveryRule(
+    types=[MessageType.ERROR],
+    channel_name="alerts",
+))
+
+# Forward everything to a logger as well
+router.add_rule(DeliveryRule(
+    forward_to=["logger"],
+))
+```
+
+### Broker with delivery guarantees
+
+```python
+from cocapn_com import MessageBroker, MessageRouter, DeliveryGuarantee, Message
+
+router = MessageRouter()
+broker = MessageBroker(router, guarantee=DeliveryGuarantee.AT_LEAST_ONCE)
+
+msg = Message(sender="client", recipient="worker", payload="process_data")
+broker.deliver(msg)
+
+# On success, acknowledge
+broker.ack(msg.id)
+
+# On failure, nack to retry (up to max_retries, then dead-letter queue)
+broker.nack(msg.id)
+```
+
+### Protocol framing and handshakes
+
+```python
+from cocapn_com import Protocol, Message, HandshakeKind
+
+# Convert a message to a wire frame
+msg = Message(sender="a", recipient="b", payload="hello")
+frame = Protocol.message_to_frame(msg)
+wire_bytes = frame.encode()
+
+# Decode on the other side
+decoded_frame = type(frame).decode(wire_bytes)
+restored = Protocol.frame_to_message(decoded_frame)
+
+# Handshake between agents
+init, init_frame = Protocol.init_handshake(
+    "agent-1",
+    kind=HandshakeKind.BASIC,
+    capabilities=["pub_sub", "rpc"],
+)
+accept, accept_frame = Protocol.accept_handshake(init, our_capabilities=["pub_sub"])
+print(accept.shared_capabilities)  # ['pub_sub']
+```
+
+## Architecture
+
+```
+cocapn_com/
+├── __init__.py      # Public API
+├── message.py       # Message, MessageType, Priority
+├── channel.py       # Channel with pub/sub, point-to-point, broadcast
+├── router.py        # MessageRouter with delivery rules and filtering
+├── protocol.py      # Wire framing, handshakes, protocol versioning
+└── broker.py        # MessageBroker with queuing, retries, DLQ
+```
 
 ## Features
-*   Browse AI capability categories: STT, TTS, vision, memory, search, embeddings, and more.
-*   Listings include cost-per-million-token estimates (where available), compatibility flags, and links to provider documentation.
-*   View agent-scale profiles (e.g., hobbyist, production, enterprise) to match tools to your project's needs.
-*   Agent-first design: appending `?json` to any page returns clean, structured data.
-*   Zero runtime dependencies. Runs entirely on your Cloudflare account.
-*   Auto-registers with the peer-discovery Fleet protocol upon deployment.
 
-## What Makes This Different
-1.  **Fork-first, not SaaS:** You deploy and control your own instance. Traffic never routes through a central service.
-2.  **Structured for machines:** The primary interface is JSON, designed for agentic use.
-3.  **You control updates:** We will not push changes to your fork. You decide when to pull upstream improvements.
+- **Message types**: text, command, event, query, response, error, heartbeat, control
+- **Priority levels**: low, normal, high, urgent — automatic priority queue ordering
+- **Channel modes**: pub/sub, point-to-point, broadcast
+- **Delivery rules**: glob patterns on sender/recipient, type filtering, custom filter functions, forwarding
+- **Delivery guarantees**: best-effort, at-least-once (with ack/nack), exactly-once (deduplication)
+- **Protocol framing**: encode/decode with type+length+payload wire format
+- **Handshakes**: basic, authenticated, encrypted negotiation with capability matching
+- **Dead-letter queue**: automatic expiry, retry exhaustion, configurable callbacks
+- **Zero external dependencies**: only stdlib + pytest for testing
 
-## An Honest Limitation
-The catalog data in your fork updates only when you manually pull changes from the upstream repository. Without active maintenance, cost data and provider listings may become outdated within a few weeks.
+## License
 
-## Development
-This is a fork-first template. You own your copy. Contributions that add useful, generalizable features to the upstream template are welcome.
-
-The template has no built-in authentication. You can add API keys, SSO, or leave it public based on your needs.
-
-## License & Attribution
-MIT License.
-
-Superinstance and Lucineer (DiGennaro et al.).
-
-<div style="text-align:center;padding:16px;color:#64748b;font-size:.8rem"><a href="https://the-fleet.casey-digennaro.workers.dev" style="color:#64748b">The Fleet</a> &middot; <a href="https://cocapn.ai" style="color:#64748b">Cocapn</a></div>
-
----
-
-<i>Built with [Cocapn](https://github.com/Lucineer/cocapn-ai) — the open-source agent runtime.</i>
-<i>Part of the [Lucineer fleet](https://github.com/Lucineer)</i>
-
+MIT © SuperInstance
