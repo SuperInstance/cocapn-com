@@ -89,3 +89,7 @@ pip install cocapn-com
 ```
 
 Python 3.10+. MIT license.
+
+## Documentation
+
+📚 [OpenConstruct Docs](https://github.com/SuperInstance/openconstruct-docs)
